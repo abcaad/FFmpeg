@@ -28,6 +28,7 @@
  */
 
 #include <ass/ass.h>
+#include "fftools/tpool.h"
 
 #include "config.h"
 #include "config_components.h"
@@ -47,6 +48,19 @@
 #include "video.h"
 
 #define FF_ASS_FEATURE_WRAP_UNICODE     (LIBASS_VERSION >= 0x01600010)
+typedef struct render_chains {
+    ASS_Renderer *renderer;   
+    ASS_Track    *track;
+    struct render_chains *next;    
+} RenderChains;
+
+typedef struct render_params {
+    ASS_Renderer *renderer;
+    ASS_Track    *track;
+    long long now;
+    // RenderChains *next;
+    ASS_Image *ret;
+} RenderParams;
 
 typedef struct AssContext {
     const AVClass *class;
@@ -59,13 +73,24 @@ typedef struct AssContext {
     char *force_style;
     int stream_index;
     int alpha;
+    int tsize;
+    int qsize;
     uint8_t rgba_map[4];
     int     pix_step[4];       ///< steps per pixel for each plane of the main output
     int original_w, original_h;
     int shaping;
     FFDrawContext draw;
     int wrap_unicode;
+    tpool_t *tpool;
+    tpool_t *draw_tpool;
+    RenderParams *render_params;
 } AssContext;
+
+typedef struct draw_params {
+    AssContext *ass;
+    AVFrame *picref;
+    ASS_Image *image;
+} DrawParams;
 
 #define OFFSET(x) offsetof(AssContext, x)
 #define FLAGS AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_VIDEO_PARAM
@@ -76,6 +101,8 @@ typedef struct AssContext {
     {"original_size",  "set the size of the original video (used to scale fonts)", OFFSET(original_w), AV_OPT_TYPE_IMAGE_SIZE, {.str = NULL},  0, 0, FLAGS }, \
     {"fontsdir",       "set the directory containing the fonts to read",           OFFSET(fontsdir),   AV_OPT_TYPE_STRING,     {.str = NULL},  0, 0, FLAGS }, \
     {"alpha",          "enable processing of alpha channel",                       OFFSET(alpha),      AV_OPT_TYPE_BOOL,       {.i64 = 0   },         0,        1, FLAGS }, \
+    {"tsize",          "thread pool size",                                         OFFSET(tsize),      AV_OPT_TYPE_INT,        {.i64 = 2   },  0, 16, FLAGS }, \
+    {"qsize",          "queue size",                                               OFFSET(qsize),      AV_OPT_TYPE_INT,        {.i64 = 16  },  4, 128, FLAGS }, \
 
 /* libass supports a log level ranging from 0 to 7 */
 static const int ass_libavfilter_log_level_map[] = {
@@ -137,6 +164,12 @@ static av_cold void uninit(AVFilterContext *ctx)
         ass_renderer_done(ass->renderer);
     if (ass->library)
         ass_library_done(ass->library);
+    if (ass->tpool)
+        tpool_destroy(ass->tpool);
+    if (ass->draw_tpool)
+        tpool_destroy(ass->draw_tpool);
+    if (ass->render_params)
+        free(ass->render_params);
 }
 
 static int query_formats(AVFilterContext *ctx)
@@ -171,8 +204,64 @@ static int config_input(AVFilterLink *inlink)
 #define AB(c)  (((c)>>8) &0xFF)
 #define AA(c)  ((0xFF-(c)) &0xFF)
 
+static void ass_render_frame_warp_void(void *param)
+{
+    RenderParams *params = (RenderParams *)param;
+    params->ret = ass_render_frame(params->renderer, params->track, params->now, NULL);
+}
+
+static void ass_draw_frame_warp_void(void *param)
+{
+    DrawParams *params = (DrawParams *)param;
+    AssContext *ass = params->ass;
+    AVFrame *picref = params->picref;
+    ASS_Image *image = params->image;
+    for (; image; image = image->next) {
+        uint8_t rgba_color[] = {AR(image->color), AG(image->color), AB(image->color), AA(image->color)};
+        FFDrawColor color;
+        ff_draw_color(&ass->draw, &color, rgba_color);
+        ff_blend_mask(&ass->draw, &color,
+                      picref->data, picref->linesize,
+                      picref->width, picref->height,
+                      image->bitmap, image->stride, image->w, image->h,
+                      3, 0, image->dst_x, image->dst_y);
+    }
+}
+
 static void overlay_ass_image(AssContext *ass, AVFrame *picref,
-                              const ASS_Image *image)
+                              ASS_Image *image)
+{
+    unsigned first_type, cnt;
+    ASS_Image *bucket1, *bucket1_tail, *prev; //, *bucket2, *bucket2_tail
+    DrawParams *params;
+    int qsize = ass->qsize;
+    if (image)
+        first_type = image->type;
+    for (; image; ) {
+        bucket1 = image;
+        for (cnt = 0; image; image = image->next, cnt++){
+            if (cnt >= qsize && image->type == first_type){
+                bucket1_tail = prev;
+                bucket1_tail->next = NULL;
+                break;
+            }
+            prev = image;
+        }
+
+        params = malloc(sizeof(DrawParams));
+        if (params == NULL)
+            continue;
+        params->ass = ass;
+        params->picref = picref;
+        params->image = bucket1;
+        tpool_add_work(ass->draw_tpool, ass_draw_frame_warp_void, (void *)params);
+
+    }
+    tpool_wait(ass->draw_tpool);
+}
+
+static void overlay_ass_image_origin(AssContext *ass, AVFrame *picref,
+                              ASS_Image *image)
 {
     for (; image; image = image->next) {
         uint8_t rgba_color[] = {AR(image->color), AG(image->color), AB(image->color), AA(image->color)};
@@ -193,13 +282,22 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *picref)
     AssContext *ass = ctx->priv;
     int detect_change = 0;
     double time_ms = picref->pts * av_q2d(inlink->time_base) * 1000;
-    ASS_Image *image = ass_render_frame(ass->renderer, ass->track,
-                                        time_ms, &detect_change);
+    ASS_Image *image;
+    // image = ass_render_frame(ass->renderer, ass->track,
+    //                                     time_ms, &detect_change);
 
+    tpool_wait(ass->tpool);
+    image = ass->render_params->ret;
+    ass->render_params->ret = NULL;
     if (detect_change)
         av_log(ctx, AV_LOG_DEBUG, "Change happened at time ms:%f\n", time_ms);
+    ass->render_params->now = time_ms;
+    tpool_add_work(ass->tpool, ass_render_frame_warp_void, (void *)ass->render_params);
 
-    overlay_ass_image(ass, picref, image);
+    if (ass->draw_tpool)
+        overlay_ass_image(ass, picref, image);
+    else
+        overlay_ass_image_origin(ass, picref, image);
 
     return ff_filter_frame(outlink, picref);
 }
@@ -245,6 +343,31 @@ static av_cold int init_ass(AVFilterContext *ctx)
                ass->filename);
         return AVERROR(EINVAL);
     }
+
+    ass->render_params = malloc(sizeof(RenderParams));
+    if (ass->render_params == NULL) {
+        av_log(ctx, AV_LOG_ERROR,
+                    "Could not create a render_params\n");
+        return AVERROR(EINVAL);
+    }
+    
+    ass->render_params->renderer = ass->renderer;
+    ass->render_params->track = ass->track;
+    ass->render_params->now = 0;
+
+    av_log(ctx, AV_LOG_DEBUG,
+                    "tsize %d qsize %d\n", ass->tsize, ass->qsize);
+    ass->tpool = tpool_create(1);
+    if (ass->tpool == NULL) {
+        av_log(ctx, AV_LOG_ERROR,
+                    "Could not create a renderer thread pool\n");
+        return AVERROR(EINVAL);
+    }
+    if (ass->tsize)
+        ass->draw_tpool = tpool_create(ass->tsize);
+    else
+        ass->draw_tpool = NULL;
+    tpool_add_work(ass->tpool, ass_render_frame_warp_void, (void *)ass->render_params);
     return 0;
 }
 

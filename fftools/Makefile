@@ -22,6 +22,7 @@ OBJS-ffmpeg +=                  \
     fftools/objpool.o           \
     fftools/sync_queue.o        \
     fftools/thread_queue.o      \
+    fftools/tpool.o             \
 
 OBJS-ffplay += fftools/ffplay_renderer.o
 
