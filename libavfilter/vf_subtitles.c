@@ -28,7 +28,7 @@
  */
 
 #include <ass/ass.h>
-#include "fftools/tpool.h"
+#include "libavfilter/tpool.h"
 
 #include "config.h"
 #include "config_components.h"
