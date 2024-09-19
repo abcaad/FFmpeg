@@ -90,6 +90,7 @@ typedef struct draw_params {
     AssContext *ass;
     AVFrame *picref;
     ASS_Image *image;
+    ASS_Image *next;
 } DrawParams;
 
 #define OFFSET(x) offsetof(AssContext, x)
@@ -216,6 +217,7 @@ static void ass_draw_frame_warp_void(void *param)
     AssContext *ass = params->ass;
     AVFrame *picref = params->picref;
     ASS_Image *image = params->image;
+    ASS_Image *prev = image;
     for (; image; image = image->next) {
         uint8_t rgba_color[] = {AR(image->color), AG(image->color), AB(image->color), AA(image->color)};
         FFDrawColor color;
@@ -225,7 +227,11 @@ static void ass_draw_frame_warp_void(void *param)
                       picref->width, picref->height,
                       image->bitmap, image->stride, image->w, image->h,
                       3, 0, image->dst_x, image->dst_y);
+        prev = image;
     }
+    if (prev)
+        prev->next = params->next;
+    free(params);
 }
 
 static void overlay_ass_image(AssContext *ass, AVFrame *picref,
@@ -254,6 +260,7 @@ static void overlay_ass_image(AssContext *ass, AVFrame *picref,
         params->ass = ass;
         params->picref = picref;
         params->image = bucket1;
+        params->next = image;
         tpool_add_work(ass->draw_tpool, ass_draw_frame_warp_void, (void *)params);
 
     }
