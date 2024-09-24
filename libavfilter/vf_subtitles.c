@@ -223,6 +223,7 @@ static void ass_draw_frame_warp_void(void *param)
     ASS_Image *image = params->image;
     ASS_Image *next = params->next;
     ASS_Image *prev = image;
+    free(params);
     for (; image; image = image->next) {
         uint8_t rgba_color[] = {AR(image->color), AG(image->color), AB(image->color), AA(image->color)};
         FFDrawColor color;
@@ -236,7 +237,6 @@ static void ass_draw_frame_warp_void(void *param)
     }
     if (prev)
         prev->next = next;
-    free(params);
 }
 
 static void overlay_ass_image(AssContext *ass, AVFrame *picref,
