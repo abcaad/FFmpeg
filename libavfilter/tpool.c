@@ -72,9 +72,10 @@ static void *tpool_worker(void *arg)
     tpool_t *tm = arg;
     tpool_work_t *work;
 
+    pthread_mutex_lock(&(tm->work_mutex));
     while (1)
     {
-        pthread_mutex_lock(&(tm->work_mutex));
+        // pthread_mutex_lock(&(tm->work_mutex));
 
         while (tm->work_first == NULL && !tm->stop)
             pthread_cond_wait(&(tm->work_cond), &(tm->work_mutex));
@@ -96,7 +97,7 @@ static void *tpool_worker(void *arg)
         tm->working_cnt--;
         if (!tm->stop && tm->working_cnt == 0 && tm->work_first == NULL)
             pthread_cond_signal(&(tm->working_cond));
-        pthread_mutex_unlock(&(tm->work_mutex));
+        // pthread_mutex_unlock(&(tm->work_mutex));
     }
 
     tm->thread_cnt--;
