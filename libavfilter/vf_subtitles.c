@@ -82,7 +82,7 @@ typedef struct AssContext {
     char *force_style;
     int stream_index;
     int alpha;
-    int rsize;
+    int rpool;
     int tsize;
     int qsize;
     uint8_t rgba_map[4];
@@ -91,7 +91,7 @@ typedef struct AssContext {
     int shaping;
     FFDrawContext draw;
     int wrap_unicode;
-    tpool_t *tpool;
+    tpool_t *render_tpool;
     tpool_t *draw_tpool;
     RenderParams *render_params;
 } AssContext;
@@ -105,9 +105,9 @@ typedef struct AssContext {
     {"original_size",  "set the size of the original video (used to scale fonts)", OFFSET(original_w), AV_OPT_TYPE_IMAGE_SIZE, {.str = NULL},  0, 0, FLAGS }, \
     {"fontsdir",       "set the directory containing the fonts to read",           OFFSET(fontsdir),   AV_OPT_TYPE_STRING,     {.str = NULL},  0, 0, FLAGS }, \
     {"alpha",          "enable processing of alpha channel",                       OFFSET(alpha),      AV_OPT_TYPE_BOOL,       {.i64 = 0   },         0,        1, FLAGS }, \
-    {"rsize",          "using render thread pool",                                 OFFSET(rsize),      AV_OPT_TYPE_BOOL,       {.i64 = 0   },         0,        1, FLAGS }, \
-    {"tsize",          "draw thread pool size",                                    OFFSET(tsize),      AV_OPT_TYPE_INT,        {.i64 = 2   },  0, 16, FLAGS }, \
-    {"qsize",          "queue size",                                               OFFSET(qsize),      AV_OPT_TYPE_INT,        {.i64 = 32  },  4, 128, FLAGS }, \
+    {"rpool",          "using render thread pool",                                 OFFSET(rpool),      AV_OPT_TYPE_BOOL,       {.i64 = 0   },         0,        1, FLAGS }, \
+    {"tsize",          "draw thread pool size",                                    OFFSET(tsize),      AV_OPT_TYPE_INT,        {.i64 = 0   },  0, 16, FLAGS }, \
+    {"qsize",          "queue size",                                               OFFSET(qsize),      AV_OPT_TYPE_INT,        {.i64 = 32  },  2, 128, FLAGS }, \
 
 /* libass supports a log level ranging from 0 to 7 */
 static const int ass_libavfilter_log_level_map[] = {
@@ -169,8 +169,8 @@ static av_cold void uninit(AVFilterContext *ctx)
         ass_renderer_done(ass->renderer);
     if (ass->library)
         ass_library_done(ass->library);
-    if (ass->tpool)
-        tpool_destroy(ass->tpool);
+    if (ass->render_tpool)
+        tpool_destroy(ass->render_tpool);
     if (ass->draw_tpool)
         tpool_destroy(ass->draw_tpool);
     if (ass->render_params)
@@ -295,13 +295,13 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *picref)
     int detect_change = 0;
     double time_ms = picref->pts * av_q2d(inlink->time_base) * 1000;
     ASS_Image *image;
-    if (ass->rsize)
+    if (ass->render_tpool)
     {
-        tpool_wait(ass->tpool);
+        tpool_wait(ass->render_tpool);
         image = ass->render_params->ret;
         ass->render_params->ret = NULL;
         ass->render_params->now = time_ms;
-        tpool_add_work(ass->tpool, ass_render_frame_warp_void, (void *)ass->render_params);
+        tpool_add_work(ass->render_tpool, ass_render_frame_warp_void, (void *)ass->render_params);
     }
     else
         image = ass_render_frame(ass->renderer, ass->track,
@@ -366,24 +366,26 @@ static av_cold int init_ass(AVFilterContext *ctx)
                     "Could not create a render_params\n");
         return AVERROR(EINVAL);
     }
-    
     ass->render_params->renderer = ass->renderer;
     ass->render_params->track = ass->track;
     ass->render_params->now = 0;
 
-    av_log(ctx, AV_LOG_DEBUG,
-                    "tsize %d qsize %d\n", ass->tsize, ass->qsize);
-    ass->tpool = tpool_create(1);
-    if (ass->tpool == NULL) {
+    ass->render_tpool = ass->rpool ? tpool_create(1) : NULL;
+    if (ass->rpool && ass->render_tpool == NULL) {
         av_log(ctx, AV_LOG_ERROR,
                     "Could not create a renderer thread pool\n");
         return AVERROR(EINVAL);
     }
-    if (ass->tsize)
-        ass->draw_tpool = tpool_create(ass->tsize);
-    else
-        ass->draw_tpool = NULL;
-    tpool_add_work(ass->tpool, ass_render_frame_warp_void, (void *)ass->render_params);
+
+    ass->draw_tpool = ass->tsize ? tpool_create(ass->tsize) : NULL;
+    if (ass->tsize && ass->draw_tpool == NULL) {
+        av_log(ctx, AV_LOG_ERROR,
+                    "Could not create a draw thread pool\n");
+        return AVERROR(EINVAL);
+    }
+    av_log(ctx, AV_LOG_DEBUG,
+                    "rpool %d: %p tsize %d: %p qsize %d\n", ass->rpool, ass->render_tpool, ass->tsize, ass->draw_tpool, ass->qsize);
+    tpool_add_work(ass->render_tpool, ass_render_frame_warp_void, (void *)ass->render_params);
     return 0;
 }
 
@@ -468,6 +470,33 @@ static av_cold int init_subtitles(AVFilterContext *ctx)
         av_log(ctx, AV_LOG_ERROR, "Could not create a libass track\n");
         return AVERROR(EINVAL);
     }
+
+    ass->render_params = malloc(sizeof(RenderParams));
+    if (ass->render_params == NULL) {
+        av_log(ctx, AV_LOG_ERROR,
+                    "Could not create a render_params\n");
+        return AVERROR(EINVAL);
+    }    
+    ass->render_params->renderer = ass->renderer;
+    ass->render_params->track = ass->track;
+    ass->render_params->now = 0;
+
+    ass->render_tpool = ass->rpool ? tpool_create(1) : NULL;
+    if (ass->rpool && ass->render_tpool == NULL) {
+        av_log(ctx, AV_LOG_ERROR,
+                    "Could not create a renderer thread pool\n");
+        return AVERROR(EINVAL);
+    }
+
+    ass->draw_tpool = ass->tsize ? tpool_create(ass->tsize) : NULL;
+    if (ass->tsize && ass->draw_tpool == NULL) {
+        av_log(ctx, AV_LOG_ERROR,
+                    "Could not create a draw thread pool\n");
+        return AVERROR(EINVAL);
+    }
+    av_log(ctx, AV_LOG_DEBUG,
+                    "rpool %d: %p tsize %d: %p qsize %d\n", ass->rpool, ass->render_tpool, ass->tsize, ass->draw_tpool, ass->qsize);
+    tpool_add_work(ass->render_tpool, ass_render_frame_warp_void, (void *)ass->render_params);
 
     /* Open subtitles file */
     ret = avformat_open_input(&fmt, ass->filename, NULL, NULL);
