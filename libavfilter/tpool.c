@@ -193,6 +193,35 @@ bool tpool_add_work(tpool_t *tm, thread_func_t func, void *arg)
     return true;
 }
 
+bool tpool_add_work_to_first(tpool_t *tm, thread_func_t func, void *arg)
+{
+    tpool_work_t *work;
+
+    if (tm == NULL)
+        return false;
+
+    work = tpool_work_create(func, arg);
+    if (work == NULL)
+        return false;
+
+    pthread_mutex_lock(&(tm->work_mutex));
+    if (tm->work_first == NULL)
+    {
+        tm->work_first = work;
+        tm->work_last = tm->work_first;
+    }
+    else
+    {
+        work->next = tm->work_first;
+        tm->work_first = work;
+    }
+
+    pthread_cond_broadcast(&(tm->work_cond));
+    pthread_mutex_unlock(&(tm->work_mutex));
+
+    return true;
+}
+
 void tpool_wait(tpool_t *tm)
 {
     if (tm == NULL)

@@ -85,6 +85,7 @@ typedef struct AssContext {
     int rpool;
     int tsize;
     int qsize;
+    int first_type;
     uint8_t rgba_map[4];
     int     pix_step[4];       ///< steps per pixel for each plane of the main output
     int original_w, original_h;
@@ -108,6 +109,7 @@ typedef struct AssContext {
     {"rpool",          "using render thread pool",                                 OFFSET(rpool),      AV_OPT_TYPE_BOOL,       {.i64 = 0   },         0,        1, FLAGS }, \
     {"tsize",          "draw thread pool size",                                    OFFSET(tsize),      AV_OPT_TYPE_INT,        {.i64 = 0   },  0, 16, FLAGS }, \
     {"qsize",          "queue size",                                               OFFSET(qsize),      AV_OPT_TYPE_INT,        {.i64 = 32  },  2, 128, FLAGS }, \
+    {"first_type",     "first_type 0-char 1-outline 2-shadow",                     OFFSET(first_type), AV_OPT_TYPE_INT,        {.i64 = 3   },  0, 3, FLAGS }, \
 
 /* libass supports a log level ranging from 0 to 7 */
 static const int ass_libavfilter_log_level_map[] = {
@@ -242,11 +244,11 @@ static void ass_draw_frame_warp_void(void *param)
 static void overlay_ass_image(AssContext *ass, AVFrame *picref,
                               ASS_Image *image)
 {
-    unsigned first_type, cnt;
+    unsigned first_type = ass->first_type, cnt;
     ASS_Image *bucket1, *bucket1_tail, *prev; //, *bucket2, *bucket2_tail
     DrawParams *params;
     int qsize = ass->qsize;
-    if (image)
+    if (first_type == 3 && image)
         first_type = image->type;
     for (; image; ) {
         bucket1 = image;
