@@ -145,6 +145,29 @@ void ff_blend_mask(FFDrawContext *draw, FFDrawColor *color,
                    int l2depth, unsigned endianness, int x0, int y0);
 
 /**
+ * Blend an alpha mask with an uniform color.
+ *
+ * @param draw           draw context
+ * @param color          color for the overlay;
+ * @param dst            destination image
+ * @param dst_linesize   line stride of the destination
+ * @param dst_w          width of the destination image
+ * @param dst_h          height of the destination image
+ * @param mask           mask
+ * @param mask_linesize  line stride of the mask
+ * @param mask_w         width of the mask
+ * @param mask_h         height of the mask
+ * @param l2depth        log2 of depth of the mask (0 for 1bpp, 3 for 8bpp)
+ * @param endianness     bit order of the mask (0: MSB to the left)
+ * @param x0             horizontal position of the overlay
+ * @param y0             vertical position of the overlay
+ */
+void ff_blend_mask_ass(FFDrawContext *draw, FFDrawColor *color,
+                   uint8_t *dst[], int dst_linesize[], int dst_w, int dst_h,
+                   const uint8_t *mask, int mask_linesize, int mask_w, int mask_h,
+                   int l2depth, unsigned endianness, int x0, int y0);
+
+/**
  * Round a dimension according to subsampling.
  *
  * @param draw       draw context

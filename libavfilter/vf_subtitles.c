@@ -230,7 +230,7 @@ static void ass_draw_frame_warp_void(void *param)
         uint8_t rgba_color[] = {AR(image->color), AG(image->color), AB(image->color), AA(image->color)};
         FFDrawColor color;
         ff_draw_color(&ass->draw, &color, rgba_color);
-        ff_blend_mask(&ass->draw, &color,
+        ff_blend_mask_ass(&ass->draw, &color,
                       picref->data, picref->linesize,
                       picref->width, picref->height,
                       image->bitmap, image->stride, image->w, image->h,
