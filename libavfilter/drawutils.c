@@ -671,14 +671,16 @@ static void blend_pixel_ass(uint8_t *dst, unsigned src, unsigned alpha,
     for (y = 0; y < h; y++) {
         xm = xm0;
         for (x = 0; x < w; x++) {
-            t += ((mask[xm >> xmshf] >> ((~xm & xmmod) << l2depth)) & mbits)
-                 * mmult;
+            // t += ((mask[xm >> xmshf] >> ((~xm & xmmod) << l2depth)) & mbits)
+            //      * mmult;
+            t += (mask[xm >> xmshf] >> ((~xm & xmmod) << l2depth)) & mbits;
             if (t == 0)
                 return;
             xm++;
         }
         mask += mask_linesize;
     }
+    t *= mmult;
     alpha = (t >> shift) * alpha;
     *dst = ((0x1010101 - alpha) * *dst + alpha * src) >> 24;
 }
