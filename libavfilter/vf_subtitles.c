@@ -95,7 +95,7 @@ typedef struct AssContext {
     tpool_t *render_tpool;
     tpool_t *draw_tpool;
     RenderParams *render_params;
-    ASS_Image* (*render_frame)(AssContext *ass, double time_ms);
+    // ASS_Image* (*render_frame)(AssContext *ass, double time_ms);
     void (*overlay_image)(AssContext *ass, AVFrame *picref, ASS_Image *image);
 } AssContext;
 
@@ -311,7 +311,17 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *picref)
     AVFilterLink *outlink = ctx->outputs[0];
     AssContext *ass = ctx->priv;
     double time_ms = picref->pts * av_q2d(inlink->time_base) * 1000;
-    ASS_Image *image = ass->render_frame(ass, time_ms);
+    ASS_Image *image;
+    if (ass->render_tpool)
+    {
+        tpool_wait(ass->render_tpool);
+        image = ass->render_params->ret;
+        ass->render_params->now = time_ms;
+        tpool_add_work(ass->render_tpool, ass_render_frame_warp_void, (void *)ass->render_params);
+    }
+    else
+        image = ass_render_frame(ass->renderer, ass->track,
+                                        time_ms, NULL);
 
     ass->overlay_image(ass, picref, image);
 
@@ -377,7 +387,7 @@ static av_cold int init_ass(AVFilterContext *ctx)
                     "Could not create a renderer thread pool\n");
         return AVERROR(EINVAL);
     }
-    ass->render_frame = ass->render_tpool ? render_frame_with_threadpool : render_frame_without_threadpool;
+    // ass->render_frame = ass->render_tpool ? render_frame_with_threadpool : render_frame_without_threadpool;
 
     ass->draw_tpool = ass->tsize ? tpool_create(ass->tsize) : NULL;
     if (ass->tsize && ass->draw_tpool == NULL) {
@@ -491,7 +501,7 @@ static av_cold int init_subtitles(AVFilterContext *ctx)
                     "Could not create a renderer thread pool\n");
         return AVERROR(EINVAL);
     }
-    ass->render_frame = ass->render_tpool ? render_frame_with_threadpool : render_frame_without_threadpool;
+    // ass->render_frame = ass->render_tpool ? render_frame_with_threadpool : render_frame_without_threadpool;
 
     ass->draw_tpool = ass->tsize ? tpool_create(ass->tsize) : NULL;
     if (ass->tsize && ass->draw_tpool == NULL) {
